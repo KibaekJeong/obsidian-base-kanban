@@ -1327,7 +1327,7 @@ export class KanbanView extends TextFileView {
 
 				// Notify plugin of card movement for GPT Task Manager integration
 				if (fromLaneId !== toLaneId) {
-					this.plugin.onCardMovedToLane(card, toLane.title);
+					this.plugin.onCardMovedToLane(card, toLane.title, fromLane.title);
 				}
 
 				this.requestSave();

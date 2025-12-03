@@ -29,7 +29,58 @@ import {
 	laneToStatus,
 	isGptIntegrationConfigured,
 	GptTask,
+	GptTaskMetadata,
 } from './GptTaskManagerIntegration';
+
+/**
+ * Public API for external plugin integration (e.g., GPT Task Manager)
+ * This allows other plugins to interact with Base Kanban programmatically.
+ */
+export interface KanbanPublicAPI {
+	/** Check if the plugin is ready */
+	isReady(): boolean;
+	
+	/** Get the GPT Task Manager configuration */
+	getGptConfig(): import('./types').GptTaskManagerConfig;
+	
+	/** Query GPT Task Manager tasks */
+	queryTasks(filter?: {
+		epic?: string;
+		project?: string;
+		status?: string[];
+		includeCompleted?: boolean;
+	}): Promise<GptTask[]>;
+	
+	/** Create a Kanban board from tasks */
+	createBoardFromTasks(
+		tasks: GptTask[],
+		boardTitle?: string
+	): import('./types').KanbanBoard;
+	
+	/** Create and open a board file */
+	createAndOpenBoard(
+		tasks: GptTask[],
+		boardTitle: string
+	): Promise<TFile>;
+	
+	/** Get available epics */
+	getEpics(): Promise<string[]>;
+	
+	/** Get available projects */
+	getProjects(): Promise<string[]>;
+	
+	/** Update a task's status */
+	updateTaskStatus(
+		taskPath: string,
+		newStatus: string
+	): Promise<boolean>;
+	
+	/** Register a callback for when a card moves between lanes */
+	onCardMove(callback: (card: KanbanCard, fromLane: string, toLane: string) => void): () => void;
+	
+	/** Open a file in Kanban view */
+	openInKanbanView(file: TFile): Promise<void>;
+}
 
 export default class KanbanPlugin extends Plugin {
 	settings: KanbanPluginSettings;
@@ -42,8 +93,17 @@ export default class KanbanPlugin extends Plugin {
 	private reminderIntervalId: number | null = null;
 	private notifiedCards: Set<string> = new Set(); // Track cards already notified
 
+	// Public API for external plugins
+	public api: KanbanPublicAPI;
+	
+	// Card move callbacks for external plugins
+	private cardMoveCallbacks: Set<(card: KanbanCard, fromLane: string, toLane: string) => void> = new Set();
+
 	async onload(): Promise<void> {
 		await this.loadSettings();
+
+		// Initialize public API
+		this.initializePublicAPI();
 
 		// Register the kanban view
 		this.registerView(KANBAN_VIEW_TYPE, (leaf) => new KanbanView(leaf, this));
@@ -114,6 +174,107 @@ export default class KanbanPlugin extends Plugin {
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
+	}
+
+	/**
+	 * Initialize the public API for external plugin integration
+	 */
+	private initializePublicAPI(): void {
+		const plugin = this;
+		
+		this.api = {
+			isReady(): boolean {
+				return true;
+			},
+			
+			getGptConfig(): import('./types').GptTaskManagerConfig {
+				return plugin.settings['gpt-task-manager'];
+			},
+			
+			async queryTasks(filter?: {
+				epic?: string;
+				project?: string;
+				status?: string[];
+				includeCompleted?: boolean;
+			}): Promise<GptTask[]> {
+				const gptConfig = plugin.settings['gpt-task-manager'];
+				if (!isGptIntegrationConfigured(gptConfig)) {
+					return [];
+				}
+				return queryGptTasks(plugin.app, gptConfig, filter);
+			},
+			
+			createBoardFromTasks(
+				tasks: GptTask[],
+				boardTitle?: string
+			): import('./types').KanbanBoard {
+				const gptConfig = plugin.settings['gpt-task-manager'];
+				return createBoardFromGptTasks(tasks, gptConfig, boardTitle);
+			},
+			
+			async createAndOpenBoard(
+				tasks: GptTask[],
+				boardTitle: string
+			): Promise<TFile> {
+				const gptConfig = plugin.settings['gpt-task-manager'];
+				const board = createBoardFromGptTasks(tasks, gptConfig, boardTitle);
+				const file = await plugin.createBoardFile(board, boardTitle);
+				return file;
+			},
+			
+			async getEpics(): Promise<string[]> {
+				const gptConfig = plugin.settings['gpt-task-manager'];
+				if (!isGptIntegrationConfigured(gptConfig)) {
+					return [];
+				}
+				return getGptEpics(plugin.app, gptConfig);
+			},
+			
+			async getProjects(): Promise<string[]> {
+				const gptConfig = plugin.settings['gpt-task-manager'];
+				if (!isGptIntegrationConfigured(gptConfig)) {
+					return [];
+				}
+				return getGptProjects(plugin.app, gptConfig);
+			},
+			
+			async updateTaskStatus(
+				taskPath: string,
+				newStatus: string
+			): Promise<boolean> {
+				const gptConfig = plugin.settings['gpt-task-manager'];
+				return updateGptTaskStatus(plugin.app, taskPath, newStatus, gptConfig);
+			},
+			
+			onCardMove(callback: (card: KanbanCard, fromLane: string, toLane: string) => void): () => void {
+				plugin.cardMoveCallbacks.add(callback);
+				return () => {
+					plugin.cardMoveCallbacks.delete(callback);
+				};
+			},
+			
+			async openInKanbanView(file: TFile): Promise<void> {
+				plugin.kanbanFileModes[file.path] = KANBAN_VIEW_TYPE;
+				const leaf = plugin.app.workspace.getLeaf(false);
+				await leaf.setViewState({
+					type: KANBAN_VIEW_TYPE,
+					state: { file: file.path },
+				});
+			}
+		};
+	}
+
+	/**
+	 * Notify external plugins that a card has moved
+	 */
+	notifyCardMove(card: KanbanCard, fromLane: string, toLane: string): void {
+		for (const callback of this.cardMoveCallbacks) {
+			try {
+				callback(card, fromLane, toLane);
+			} catch (error) {
+				console.error('Error in card move callback:', error);
+			}
+		}
 	}
 
 	private registerCommands(): void {
@@ -572,7 +733,7 @@ export default class KanbanPlugin extends Plugin {
 	/**
 	 * Create a Kanban board file from a board object
 	 */
-	private async createBoardFile(board: import('./types').KanbanBoard, title: string): Promise<void> {
+	private async createBoardFile(board: import('./types').KanbanBoard, title: string): Promise<TFile> {
 		const targetFolder = this.app.fileManager.getNewFileParent(
 			this.app.workspace.getActiveFile()?.path || ''
 		);
@@ -595,13 +756,18 @@ export default class KanbanPlugin extends Plugin {
 			type: KANBAN_VIEW_TYPE,
 			state: { file: file.path },
 		});
+
+		return file;
 	}
 
 	/**
 	 * Update GPT Task Manager task status when a card moves between lanes
 	 */
-	async onCardMovedToLane(card: KanbanCard, newLaneTitle: string): Promise<void> {
+	async onCardMovedToLane(card: KanbanCard, newLaneTitle: string, oldLaneTitle?: string): Promise<void> {
 		const gptConfig = this.settings['gpt-task-manager'];
+		
+		// Notify external plugins about the card move
+		this.notifyCardMove(card, oldLaneTitle || '', newLaneTitle);
 		
 		if (!gptConfig.enabled || !gptConfig.updateStatusOnMove) return;
 		if (!card.baseTaskPath) return;
