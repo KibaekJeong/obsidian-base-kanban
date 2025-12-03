@@ -68,6 +68,25 @@ export default class KanbanPlugin extends Plugin {
 		if (this.settings['enable-reminders']) {
 			this.startReminderCheck();
 		}
+
+		// Handle file renames to keep kanbanFileModes in sync
+		this.registerEvent(
+			this.app.vault.on('rename', (file, oldPath) => {
+				if (this.kanbanFileModes[oldPath]) {
+					this.kanbanFileModes[file.path] = this.kanbanFileModes[oldPath];
+					delete this.kanbanFileModes[oldPath];
+				}
+			})
+		);
+
+		// Handle file deletions to clean up kanbanFileModes
+		this.registerEvent(
+			this.app.vault.on('delete', (file) => {
+				if (this.kanbanFileModes[file.path]) {
+					delete this.kanbanFileModes[file.path];
+				}
+			})
+		);
 	}
 
 	onunload(): void {
@@ -109,12 +128,12 @@ export default class KanbanPlugin extends Plugin {
 
 				const activeView = this.app.workspace.getActiveViewOfType(KanbanView);
 				if (activeView) {
-					this.kanbanFileModes[(activeView.leaf as any).id || activeFile.path] = 'markdown';
+					this.kanbanFileModes[activeFile.path] = 'markdown';
 					this.setMarkdownView(activeView.leaf);
 				} else {
 					const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
 					if (markdownView) {
-						this.kanbanFileModes[(markdownView.leaf as any).id || activeFile.path] = KANBAN_VIEW_TYPE;
+						this.kanbanFileModes[activeFile.path] = KANBAN_VIEW_TYPE;
 						this.setKanbanView(markdownView.leaf);
 					}
 				}
@@ -245,7 +264,7 @@ export default class KanbanPlugin extends Plugin {
 								.setIcon('columns')
 								.setSection('pane')
 								.onClick(() => {
-									this.kanbanFileModes[(leaf as any).id || file.path] = KANBAN_VIEW_TYPE;
+									this.kanbanFileModes[file.path] = KANBAN_VIEW_TYPE;
 									this.setKanbanView(leaf);
 								});
 						});
@@ -258,7 +277,7 @@ export default class KanbanPlugin extends Plugin {
 								.setIcon('file-text')
 								.setSection('pane')
 								.onClick(() => {
-									this.kanbanFileModes[(leaf as any).id || file.path] = 'markdown';
+									this.kanbanFileModes[file.path] = 'markdown';
 									this.setMarkdownView(leaf);
 								});
 						});
@@ -278,8 +297,9 @@ export default class KanbanPlugin extends Plugin {
 					return function (this: WorkspaceLeaf) {
 						const state = this.view?.getState();
 						const stateFile = state?.file as string | undefined;
-						if (stateFile && self.kanbanFileModes[(this as any).id || stateFile]) {
-							delete self.kanbanFileModes[(this as any).id || stateFile];
+						// Clean up file mode tracking when leaf is detached
+						if (stateFile && self.kanbanFileModes[stateFile]) {
+							delete self.kanbanFileModes[stateFile];
 						}
 						return next.apply(this);
 					};
@@ -291,7 +311,7 @@ export default class KanbanPlugin extends Plugin {
 						if (
 							state.type === 'markdown' &&
 							stateFile &&
-							self.kanbanFileModes[(this as any).id || stateFile] !== 'markdown'
+							self.kanbanFileModes[stateFile] !== 'markdown'
 						) {
 							const cache = self.app.metadataCache.getCache(stateFile);
 							if (cache?.frontmatter?.[FRONTMATTER_KEY]) {
@@ -334,12 +354,42 @@ export default class KanbanPlugin extends Plugin {
 			this.app.workspace.getActiveFile()?.path || ''
 		);
 
+		let kanban: TFile | null = null;
+
 		try {
-			const kanban: TFile = await (this.app.fileManager as any).createNewMarkdownFile(
+			// Try the internal API first (preferred as it handles naming conflicts)
+			kanban = await (this.app.fileManager as any).createNewMarkdownFile(
 				targetFolder,
 				'Untitled Kanban'
 			);
+		} catch (primaryError) {
+			// Fallback to direct vault.create if internal API fails
+			console.warn('Primary file creation failed, using fallback:', primaryError);
+			try {
+				const basePath = targetFolder.path ? `${targetFolder.path}/` : '';
+				let filePath = `${basePath}Untitled Kanban.md`;
+				let counter = 1;
+				
+				// Handle naming conflicts manually
+				while (this.app.vault.getAbstractFileByPath(filePath)) {
+					filePath = `${basePath}Untitled Kanban ${counter}.md`;
+					counter++;
+				}
+				
+				kanban = await this.app.vault.create(filePath, BASIC_FRONTMATTER);
+			} catch (fallbackError) {
+				console.error('Error creating kanban board:', fallbackError);
+				new Notice('Error creating Kanban board');
+				return;
+			}
+		}
 
+		if (!kanban) {
+			new Notice('Error creating Kanban board');
+			return;
+		}
+
+		try {
 			await this.app.vault.modify(kanban, BASIC_FRONTMATTER);
 			await this.app.workspace.getLeaf().setViewState({
 				type: KANBAN_VIEW_TYPE,
@@ -348,7 +398,7 @@ export default class KanbanPlugin extends Plugin {
 
 			new Notice('Created new Kanban board');
 		} catch (error) {
-			console.error('Error creating kanban board:', error);
+			console.error('Error setting up kanban board:', error);
 			new Notice('Error creating Kanban board');
 		}
 	}

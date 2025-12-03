@@ -269,18 +269,28 @@ export class BaseSyncService {
 	 */
 	async createBaseTask(title: string, metadata: BaseTaskMetadata, lane?: KanbanLane): Promise<string | null> {
 		try {
+			// Ensure tasks folder exists
 			const folder = this.app.vault.getAbstractFileByPath(this.config.tasksFolder);
 			if (!(folder instanceof TFolder)) {
 				// Create the folder if it doesn't exist
-				await this.app.vault.createFolder(this.config.tasksFolder);
+				try {
+					await this.app.vault.createFolder(this.config.tasksFolder);
+				} catch (folderError) {
+					// Folder might already exist or be a file - check again
+					const recheckFolder = this.app.vault.getAbstractFileByPath(this.config.tasksFolder);
+					if (!(recheckFolder instanceof TFolder)) {
+						console.error('Cannot create tasks folder:', this.config.tasksFolder, folderError);
+						return null;
+					}
+				}
 			}
 
-			// Generate safe filename
-			const safeTitle = title
+			// Generate safe filename - handle empty titles
+			const safeTitle = (title || 'Untitled Task')
 				.replace(/[\\/:*?"<>|]/g, '-')
 				.replace(/\s+/g, ' ')
 				.trim()
-				.substring(0, 100);
+				.substring(0, 100) || 'task';
 			
 			const timestamp = Date.now();
 			const filename = `${safeTitle}-${timestamp}.md`;
@@ -288,7 +298,7 @@ export class BaseSyncService {
 
 			// Build frontmatter
 			const frontmatter: Record<string, string | number | boolean | undefined> = {
-				title,
+				title: title || 'Untitled Task',
 				created: new Date().toISOString(),
 			};
 
@@ -309,7 +319,7 @@ export class BaseSyncService {
 			}
 
 			// Create file content
-			const content = this.createFileWithFrontmatter(frontmatter, `# ${title}\n`);
+			const content = this.createFileWithFrontmatter(frontmatter, `# ${title || 'Untitled Task'}\n`);
 			
 			await this.app.vault.create(filepath, content);
 			return filepath;
@@ -368,6 +378,11 @@ export class BaseSyncService {
 			return { created: 0, updated: 0, conflicts: [], errors: ['Sync already in progress'] };
 		}
 
+		// Guard: cannot sync to a board with no lanes
+		if (!board.lanes || board.lanes.length === 0) {
+			return { created: 0, updated: 0, conflicts: [], errors: ['Board has no lanes - add at least one lane before syncing'] };
+		}
+
 		this.syncInProgress = true;
 		const result: SyncResult = { created: 0, updated: 0, conflicts: [], errors: [] };
 
@@ -401,6 +416,9 @@ export class BaseSyncService {
 						const newCard = this.createCardFromTask(task);
 						lane.cards.push(newCard);
 						result.created++;
+					} else {
+						// This shouldn't happen given the guard above, but log it just in case
+						console.warn(`No lane found for task: ${task.path}`);
 					}
 				}
 			}
