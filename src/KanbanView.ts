@@ -1325,6 +1325,11 @@ export class KanbanView extends TextFileView {
 				const [card] = fromLane.cards.splice(cardIndex, 1);
 				toLane.cards.splice(event.newIndex || 0, 0, card);
 
+				// Notify plugin of card movement for GPT Task Manager integration
+				if (fromLaneId !== toLaneId) {
+					this.plugin.onCardMovedToLane(card, toLane.title);
+				}
+
 				this.requestSave();
 				this.render();
 			},

@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type KanbanPlugin from './main';
-import { KanbanPluginSettings, DEFAULT_SETTINGS, DEFAULT_BASE_SYNC_CONFIG, ConflictResolution } from './types';
+import { KanbanPluginSettings, DEFAULT_SETTINGS, DEFAULT_BASE_SYNC_CONFIG, DEFAULT_GPT_TASK_MANAGER_CONFIG, GPT_TASK_MANAGER_LANE_MAPPING, ConflictResolution } from './types';
 
 export class KanbanSettingTab extends PluginSettingTab {
 	plugin: KanbanPlugin;
@@ -663,6 +663,180 @@ export class KanbanSettingTab extends PluginSettingTab {
 				);
 		}
 
+		// ========== GPT Task Manager Integration ==========
+		containerEl.createEl('h2', { text: 'GPT Task Manager Integration' });
+
+		const gptConfig = this.plugin.settings['gpt-task-manager'];
+
+		containerEl.createEl('p', { 
+			text: 'Integrate with GPT Task Manager plugin to view and manage tasks in Kanban format. When enabled, tasks created by GPT Task Manager can be displayed as Kanban cards.',
+			cls: 'setting-item-description'
+		});
+
+		new Setting(containerEl)
+			.setName('Enable GPT Task Manager integration')
+			.setDesc('Sync cards with GPT Task Manager task files. Moving cards will update task status.')
+			.addToggle((toggle) =>
+				toggle
+					.setValue(gptConfig.enabled)
+					.onChange(async (value) => {
+						this.plugin.settings['gpt-task-manager'].enabled = value;
+						
+						// Auto-configure Base Sync when GPT integration is enabled
+						if (value) {
+							const baseSyncConfig = this.plugin.settings['base-sync'];
+							baseSyncConfig.enabled = true;
+							baseSyncConfig.tasksFolder = gptConfig.tasksFolder;
+							baseSyncConfig.statusField = gptConfig.statusField;
+							baseSyncConfig.projectField = gptConfig.projectField;
+							baseSyncConfig.laneMapping = { ...GPT_TASK_MANAGER_LANE_MAPPING };
+						}
+						
+						await this.plugin.saveSettings();
+						this.display(); // Refresh to show/hide dependent settings
+					})
+			);
+
+		if (gptConfig.enabled) {
+			new Setting(containerEl)
+				.setName('Tasks folder')
+				.setDesc('Folder containing GPT Task Manager task files')
+				.addText((text) =>
+					text
+						.setPlaceholder('500 Plan & Reflect/520 Tasks')
+						.setValue(gptConfig.tasksFolder)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].tasksFolder = value || DEFAULT_GPT_TASK_MANAGER_CONFIG.tasksFolder;
+							// Also update Base Sync folder
+							this.plugin.settings['base-sync'].tasksFolder = value || DEFAULT_GPT_TASK_MANAGER_CONFIG.tasksFolder;
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName('Epics folder')
+				.setDesc('Folder containing GPT Task Manager epic files')
+				.addText((text) =>
+					text
+						.setPlaceholder('500 Plan & Reflect/510 Epics')
+						.setValue(gptConfig.epicsFolder)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].epicsFolder = value || DEFAULT_GPT_TASK_MANAGER_CONFIG.epicsFolder;
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName('Projects folder')
+				.setDesc('Folder containing GPT Task Manager project files')
+				.addText((text) =>
+					text
+						.setPlaceholder('400 Projects')
+						.setValue(gptConfig.projectsFolder)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].projectsFolder = value || DEFAULT_GPT_TASK_MANAGER_CONFIG.projectsFolder;
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName('Status field')
+				.setDesc('Frontmatter field name for task status (case-sensitive)')
+				.addText((text) =>
+					text
+						.setPlaceholder('Status')
+						.setValue(gptConfig.statusField)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].statusField = value || 'Status';
+							this.plugin.settings['base-sync'].statusField = value || 'Status';
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName('Update status on card move')
+				.setDesc('Automatically update task status when a card is moved between lanes')
+				.addToggle((toggle) =>
+					toggle
+						.setValue(gptConfig.updateStatusOnMove)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].updateStatusOnMove = value;
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName('Sync checklist items')
+				.setDesc('Display the task\'s ## 🔄 Sync checklist item as the card title')
+				.addToggle((toggle) =>
+					toggle
+						.setValue(gptConfig.syncChecklistToBoard)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].syncChecklistToBoard = value;
+							await this.plugin.saveSettings();
+						})
+				);
+
+			// Status values configuration
+			containerEl.createEl('h3', { text: 'Status Values' });
+			containerEl.createEl('p', { 
+				text: 'Configure the status values used by GPT Task Manager. These should match the Status field values in your task files.',
+				cls: 'setting-item-description'
+			});
+
+			new Setting(containerEl)
+				.setName('Backlog status value')
+				.setDesc('Status value for tasks in the Backlog lane')
+				.addText((text) =>
+					text
+						.setPlaceholder('backlog')
+						.setValue(gptConfig.statusValues.backlog)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].statusValues.backlog = value || 'backlog';
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName('To Do status value')
+				.setDesc('Status value for tasks in the To Do lane')
+				.addText((text) =>
+					text
+						.setPlaceholder('todo')
+						.setValue(gptConfig.statusValues.todo)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].statusValues.todo = value || 'todo';
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName('In Progress status value')
+				.setDesc('Status value for tasks in the In Progress lane')
+				.addText((text) =>
+					text
+						.setPlaceholder('in-progress')
+						.setValue(gptConfig.statusValues.inProgress)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].statusValues.inProgress = value || 'in-progress';
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName('Done status value')
+				.setDesc('Status value for tasks in the Done lane')
+				.addText((text) =>
+					text
+						.setPlaceholder('done')
+						.setValue(gptConfig.statusValues.done)
+						.onChange(async (value) => {
+							this.plugin.settings['gpt-task-manager'].statusValues.done = value || 'done';
+							await this.plugin.saveSettings();
+						})
+				);
+		}
+
 		// ========== About ==========
 		containerEl.createEl('h2', { text: 'About' });
 		
@@ -672,6 +846,9 @@ export class KanbanSettingTab extends PluginSettingTab {
 		});
 		aboutEl.createEl('p', { 
 			text: 'Per-board settings can override these global settings. Access board settings from the board menu (three dots in the header) or via the command palette.' 
+		});
+		aboutEl.createEl('p', { 
+			text: 'GPT Task Manager integration allows viewing tasks created by GPT Task Manager in Kanban format. Use the command palette to create boards from Epics or Projects.' 
 		});
 	}
 

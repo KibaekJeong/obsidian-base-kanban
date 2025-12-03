@@ -64,6 +64,41 @@ export interface LaneStatusMapping {
 // Conflict resolution strategies
 export type ConflictResolution = 'local' | 'remote' | 'last-write' | 'prompt';
 
+// GPT Task Manager integration configuration
+export interface GptTaskManagerConfig {
+	enabled: boolean;                // Whether GPT Task Manager integration is enabled
+	tasksFolder: string;             // GPT Task Manager tasks folder (default: '500 Plan & Reflect/520 Tasks')
+	epicsFolder: string;             // GPT Task Manager epics folder (default: '500 Plan & Reflect/510 Epics')
+	projectsFolder: string;          // GPT Task Manager projects folder (default: '400 Projects')
+	goalsFolder: string;             // GPT Task Manager goals folder (default: '300 Goals & Milestone/Goals')
+	// Field mappings (match GPT Task Manager's frontmatter structure)
+	typeField: string;               // Field for task type (default: 'Type')
+	areaField: string;               // Field for area (default: 'Area')
+	goalField: string;               // Field for goal (default: 'Goal')
+	projectField: string;            // Field for project (default: 'Project')
+	epicField: string;               // Field for epic (default: 'Epic')
+	statusField: string;             // Field for status (default: 'Status')
+	priorityField: string;           // Field for priority (default: 'Priority')
+	// Status values that GPT Task Manager uses
+	statusValues: {
+		backlog: string;             // Default: 'backlog'
+		todo: string;                // Default: 'todo'
+		inProgress: string;          // Default: 'in-progress'
+		done: string;                // Default: 'done'
+	};
+	// Priority values that GPT Task Manager uses
+	priorityValues: {
+		low: string;                 // Default: 'low'
+		medium: string;              // Default: 'medium'
+		high: string;                // Default: 'high'
+		critical: string;            // Default: 'critical'
+	};
+	// Sync behavior
+	syncChecklistToBoard: boolean;   // Sync the ## 🔄 Sync checklist items to Kanban cards
+	updateStatusOnMove: boolean;     // Update task status when card moves between lanes
+	createBoardForEpic: boolean;     // Auto-create a Kanban board when viewing an Epic
+}
+
 // Base sync configuration
 export interface BaseSyncConfig {
 	enabled: boolean;                // Whether sync is enabled
@@ -236,6 +271,8 @@ export interface KanbanPluginSettings {
 	'wip-block-exceeded': boolean;         // Block adding when WIP exceeded
 	// Auto-create notes
 	'auto-create-note': boolean;           // Auto-create note for new cards
+	// GPT Task Manager integration
+	'gpt-task-manager': GptTaskManagerConfig;  // GPT Task Manager integration configuration
 }
 
 export const DEFAULT_BASE_SYNC_CONFIG: BaseSyncConfig = {
@@ -250,6 +287,45 @@ export const DEFAULT_BASE_SYNC_CONFIG: BaseSyncConfig = {
 	syncInterval: 0,
 	createMissingTasks: false,
 	archiveCompletedTasks: false,
+};
+
+// Default GPT Task Manager configuration (based on SecondBrain structure)
+export const DEFAULT_GPT_TASK_MANAGER_CONFIG: GptTaskManagerConfig = {
+	enabled: false,
+	tasksFolder: '500 Plan & Reflect/520 Tasks',
+	epicsFolder: '500 Plan & Reflect/510 Epics',
+	projectsFolder: '400 Projects',
+	goalsFolder: '300 Goals & Milestone/Goals',
+	typeField: 'Type',
+	areaField: 'Area',
+	goalField: 'Goal',
+	projectField: 'Project',
+	epicField: 'Epic',
+	statusField: 'Status',
+	priorityField: 'Priority',
+	statusValues: {
+		backlog: 'backlog',
+		todo: 'todo',
+		inProgress: 'in-progress',
+		done: 'done',
+	},
+	priorityValues: {
+		low: 'low',
+		medium: 'medium',
+		high: 'high',
+		critical: 'critical',
+	},
+	syncChecklistToBoard: true,
+	updateStatusOnMove: true,
+	createBoardForEpic: false,
+};
+
+// Pre-configured lane mapping for GPT Task Manager integration
+export const GPT_TASK_MANAGER_LANE_MAPPING: LaneStatusMapping = {
+	'Backlog': 'backlog',
+	'To Do': 'todo',
+	'In Progress': 'in-progress',
+	'Done': 'done',
 };
 
 export const DEFAULT_SETTINGS: KanbanPluginSettings = {
@@ -294,6 +370,8 @@ export const DEFAULT_SETTINGS: KanbanPluginSettings = {
 	'wip-block-exceeded': false,
 	// Auto-create notes
 	'auto-create-note': false,
+	// GPT Task Manager integration
+	'gpt-task-manager': { ...DEFAULT_GPT_TASK_MANAGER_CONFIG },
 };
 
 export const KANBAN_VIEW_TYPE = 'kanban';

@@ -7,6 +7,7 @@ import {
 	TFolder,
 	ViewState,
 	WorkspaceLeaf,
+	FuzzySuggestModal,
 } from 'obsidian';
 
 import { KanbanView } from './KanbanView';
@@ -18,7 +19,17 @@ import {
 	FRONTMATTER_KEY,
 	KanbanCard,
 } from './types';
-import { BASIC_FRONTMATTER, hasFrontmatterKey, parseKanbanBoard } from './parser';
+import { BASIC_FRONTMATTER, hasFrontmatterKey, parseKanbanBoard, serializeKanbanBoard } from './parser';
+import {
+	queryGptTasks,
+	createBoardFromGptTasks,
+	getGptEpics,
+	getGptProjects,
+	updateGptTaskStatus,
+	laneToStatus,
+	isGptIntegrationConfigured,
+	GptTask,
+} from './GptTaskManagerIntegration';
 
 export default class KanbanPlugin extends Plugin {
 	settings: KanbanPluginSettings;
@@ -231,6 +242,88 @@ export default class KanbanPlugin extends Plugin {
 				view.manualSync();
 			},
 		});
+
+		// ========== GPT Task Manager Integration Commands ==========
+
+		// Create Kanban board from GPT Task Manager Epic
+		this.addCommand({
+			id: 'gpt-create-board-from-epic',
+			name: 'GPT: Create Kanban board from Epic',
+			callback: async () => {
+				const gptConfig = this.settings['gpt-task-manager'];
+				if (!isGptIntegrationConfigured(gptConfig)) {
+					new Notice('GPT Task Manager integration is not enabled. Enable it in plugin settings.');
+					return;
+				}
+
+				const epics = await getGptEpics(this.app, gptConfig);
+				if (epics.length === 0) {
+					new Notice(`No epics found in ${gptConfig.epicsFolder}`);
+					return;
+				}
+
+				new EpicSelectorModal(this.app, epics, async (epicName) => {
+					await this.createGptBoardFromEpic(epicName);
+				}).open();
+			},
+		});
+
+		// Create Kanban board from GPT Task Manager Project
+		this.addCommand({
+			id: 'gpt-create-board-from-project',
+			name: 'GPT: Create Kanban board from Project',
+			callback: async () => {
+				const gptConfig = this.settings['gpt-task-manager'];
+				if (!isGptIntegrationConfigured(gptConfig)) {
+					new Notice('GPT Task Manager integration is not enabled. Enable it in plugin settings.');
+					return;
+				}
+
+				const projects = await getGptProjects(this.app, gptConfig);
+				if (projects.length === 0) {
+					new Notice(`No projects found in ${gptConfig.projectsFolder}`);
+					return;
+				}
+
+				new ProjectSelectorModal(this.app, projects, async (projectName) => {
+					await this.createGptBoardFromProject(projectName);
+				}).open();
+			},
+		});
+
+		// Create Kanban board from all GPT Task Manager tasks
+		this.addCommand({
+			id: 'gpt-create-board-all-tasks',
+			name: 'GPT: Create Kanban board from all tasks',
+			callback: async () => {
+				const gptConfig = this.settings['gpt-task-manager'];
+				if (!isGptIntegrationConfigured(gptConfig)) {
+					new Notice('GPT Task Manager integration is not enabled. Enable it in plugin settings.');
+					return;
+				}
+
+				await this.createGptBoardFromAllTasks();
+			},
+		});
+
+		// Refresh GPT Task Manager board
+		this.addCommand({
+			id: 'gpt-refresh-board',
+			name: 'GPT: Refresh board with latest tasks',
+			checkCallback: (checking) => {
+				const view = this.app.workspace.getActiveViewOfType(KanbanView);
+				if (!view) return false;
+				
+				const gptConfig = this.settings['gpt-task-manager'];
+				if (!isGptIntegrationConfigured(gptConfig)) return false;
+				
+				if (checking) return true;
+				
+				// Trigger a sync to refresh cards
+				view.manualSync();
+				new Notice('Board refreshed with latest GPT tasks');
+			},
+		});
 	}
 
 	private registerFileMenu(): void {
@@ -400,6 +493,124 @@ export default class KanbanPlugin extends Plugin {
 		} catch (error) {
 			console.error('Error setting up kanban board:', error);
 			new Notice('Error creating Kanban board');
+		}
+	}
+
+	// ============ GPT Task Manager Integration ============
+
+	/**
+	 * Create a Kanban board from GPT Task Manager Epic
+	 */
+	async createGptBoardFromEpic(epicName: string): Promise<void> {
+		const gptConfig = this.settings['gpt-task-manager'];
+		
+		new Notice(`Loading tasks for Epic: ${epicName}...`);
+		
+		const tasks = await queryGptTasks(this.app, gptConfig, {
+			epic: epicName,
+			includeCompleted: true,
+		});
+
+		if (tasks.length === 0) {
+			new Notice(`No tasks found for Epic: ${epicName}`);
+			return;
+		}
+
+		const board = createBoardFromGptTasks(tasks, gptConfig, `${epicName} Board`);
+		await this.createBoardFile(board, `${epicName} Board`);
+		
+		new Notice(`Created Kanban board with ${tasks.length} tasks from Epic: ${epicName}`);
+	}
+
+	/**
+	 * Create a Kanban board from GPT Task Manager Project
+	 */
+	async createGptBoardFromProject(projectName: string): Promise<void> {
+		const gptConfig = this.settings['gpt-task-manager'];
+		
+		new Notice(`Loading tasks for Project: ${projectName}...`);
+		
+		const tasks = await queryGptTasks(this.app, gptConfig, {
+			project: projectName,
+			includeCompleted: true,
+		});
+
+		if (tasks.length === 0) {
+			new Notice(`No tasks found for Project: ${projectName}`);
+			return;
+		}
+
+		const board = createBoardFromGptTasks(tasks, gptConfig, `${projectName} Board`);
+		await this.createBoardFile(board, `${projectName} Board`);
+		
+		new Notice(`Created Kanban board with ${tasks.length} tasks from Project: ${projectName}`);
+	}
+
+	/**
+	 * Create a Kanban board from all GPT Task Manager tasks
+	 */
+	async createGptBoardFromAllTasks(): Promise<void> {
+		const gptConfig = this.settings['gpt-task-manager'];
+		
+		new Notice('Loading all GPT tasks...');
+		
+		const tasks = await queryGptTasks(this.app, gptConfig, {
+			includeCompleted: false,  // Exclude completed by default for "all tasks" view
+		});
+
+		if (tasks.length === 0) {
+			new Notice('No active tasks found');
+			return;
+		}
+
+		const board = createBoardFromGptTasks(tasks, gptConfig, 'All Tasks Board');
+		await this.createBoardFile(board, 'All Tasks Board');
+		
+		new Notice(`Created Kanban board with ${tasks.length} active tasks`);
+	}
+
+	/**
+	 * Create a Kanban board file from a board object
+	 */
+	private async createBoardFile(board: import('./types').KanbanBoard, title: string): Promise<void> {
+		const targetFolder = this.app.fileManager.getNewFileParent(
+			this.app.workspace.getActiveFile()?.path || ''
+		);
+
+		const basePath = targetFolder.path ? `${targetFolder.path}/` : '';
+		let filePath = `${basePath}${title}.md`;
+		let counter = 1;
+		
+		// Handle naming conflicts
+		while (this.app.vault.getAbstractFileByPath(filePath)) {
+			filePath = `${basePath}${title} ${counter}.md`;
+			counter++;
+		}
+
+		const content = serializeKanbanBoard(board);
+		const file = await this.app.vault.create(filePath, content);
+
+		// Open the new board
+		await this.app.workspace.getLeaf().setViewState({
+			type: KANBAN_VIEW_TYPE,
+			state: { file: file.path },
+		});
+	}
+
+	/**
+	 * Update GPT Task Manager task status when a card moves between lanes
+	 */
+	async onCardMovedToLane(card: KanbanCard, newLaneTitle: string): Promise<void> {
+		const gptConfig = this.settings['gpt-task-manager'];
+		
+		if (!gptConfig.enabled || !gptConfig.updateStatusOnMove) return;
+		if (!card.baseTaskPath) return;
+
+		const newStatus = laneToStatus(newLaneTitle, gptConfig);
+		const success = await updateGptTaskStatus(this.app, card.baseTaskPath, newStatus, gptConfig);
+		
+		if (success) {
+			new Notice(`Updated task status to: ${newStatus}`);
 		}
 	}
 
@@ -596,4 +807,58 @@ function around<T extends object>(
 			remover();
 		}
 	};
+}
+
+/**
+ * Modal for selecting an Epic to create a Kanban board from
+ */
+class EpicSelectorModal extends FuzzySuggestModal<string> {
+	private epics: string[];
+	private onChoose: (epic: string) => void;
+
+	constructor(app: import('obsidian').App, epics: string[], onChoose: (epic: string) => void) {
+		super(app);
+		this.epics = epics;
+		this.onChoose = onChoose;
+		this.setPlaceholder('Select an Epic to create a Kanban board from...');
+	}
+
+	getItems(): string[] {
+		return this.epics;
+	}
+
+	getItemText(item: string): string {
+		return item;
+	}
+
+	onChooseItem(item: string, evt: MouseEvent | KeyboardEvent): void {
+		this.onChoose(item);
+	}
+}
+
+/**
+ * Modal for selecting a Project to create a Kanban board from
+ */
+class ProjectSelectorModal extends FuzzySuggestModal<string> {
+	private projects: string[];
+	private onChoose: (project: string) => void;
+
+	constructor(app: import('obsidian').App, projects: string[], onChoose: (project: string) => void) {
+		super(app);
+		this.projects = projects;
+		this.onChoose = onChoose;
+		this.setPlaceholder('Select a Project to create a Kanban board from...');
+	}
+
+	getItems(): string[] {
+		return this.projects;
+	}
+
+	getItemText(item: string): string {
+		return item;
+	}
+
+	onChooseItem(item: string, evt: MouseEvent | KeyboardEvent): void {
+		this.onChoose(item);
+	}
 }
